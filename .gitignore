@@ -1,0 +1,4 @@
+wp1_data/
+*.csv
+__pycache__/
+*.pyc

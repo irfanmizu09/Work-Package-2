@@ -1,0 +1,82 @@
+Trial 1: V2 at 20.10.26 1641
+ng, atmoserror2_dev
+(wp2) PS C:\cft_project\students\wp2> & c:\cft_project\students\wp2\.venv\Scripts\python.exe c:/cft_project/students/wp2/tests_codes/near_threshold_v2.py      
+train: 1 file(s) from C:\cft_project\students\wp2\wp1_data\explain\train 
+ 
+Built 'leak_failed' from `status` using regex 'leak': 38,488 of 148,696 failures.
+Top failure statuses (* = counted as LEAK failure). Widen LEAK_STATUS_REGEX if a leak status lacks *:
+  *    13,711  0: P1--Leak During Meas
+       11,554  6: P2 Error Percent
+  *     9,680  0: P3--Leak During Meas
+        6,160  V_Out_HighP2:
+        6,136  0: P1--TimeOut Fill Tes
+  *     5,205  P1 Leak During Measure
+        5,113  54: Prior Op Failed
+        5,026  0: P1--Stab Tolarance O
+        5,021  101: Serial Code Not Matched
+        3,927  0: P2--Stab Tolarance O
+        3,785  8: P7 Atmos Error Li
+        3,619  SC_Decode_Fail:
+        3,376  0: P4--Stab Tolarance O
+        2,835  54: Prior Op
+        2,802  105: Serial Code Grading Failed
+test: 1 file(s) from C:\cft_project\students\wp2\wp1_data\explain\test 
+3,878,074 train / 897,021 test rows; 18 _dev features for Isolation Forest 
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+
+Trial 1 at V3
+(wp2) PS C:\cft_project\students\wp2> & c:\cft_project\students\wp2\.venv\Scripts\python.exe c:/cft_project/students/wp2/tests_codes/near_threshold_v3.py      
+test: 1 file(s) from C:\cft_project\students\wp2\wp1_data\explain\test 
+ 
+Built 'leak_failed' from `status` using regex 'leak': 8,655 of 27,054 failures.
+Top failure statuses (* = counted as LEAK failure). Widen LEAK_STATUS_REGEX if a leak status lacks *:
+        2,447  V_Out_LowAtmos1:
+  *     2,357  0: P3--Leak During Meas
+        2,103  101: Serial Code Not Matched
+        1,799  6: P2 Error Percent
+  *     1,789  P1 Leak During Measure
+  *     1,764  0: P1--Leak During Meas
+          974  Wrong DeviceID-Corre:
+          927  105: Serial Code Grading Failed
+          556  54: Prior Op Failed
+          546  2: P1 WP6-10
+          533  0: P1--Stab Tolarance O
+  *       479  1: P5 Gross Leak
+  *       463  P3 Leak During Measure
+          462  0: P1--TimeOut Fill Tes
+          407  105: Serial Code Grading Fail
+train: 1 file(s) from C:\cft_project\students\wp2\wp1_data\explain\train 
+3,878,074 train / 897,021 test rows; 18 _dev features 
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1396: RuntimeWarning: All-NaN slice encountered 
+  return _nanquantile_unchecked(
+C:\cft_project\students\wp2\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered 
+  return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,

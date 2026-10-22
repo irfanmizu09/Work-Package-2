@@ -1,0 +1,24 @@
+[project]
+name = "wp2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "adam-fahim", email = "adam.fahim@t-nex.de" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastparquet>=2026.9.0",
+    "numpy>=2.4.6",
+    "pandas>=3.0.6",
+    "pyarrow>=26.0.0",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
+]
+
+[project.scripts]
+wp2 = "wp2:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
