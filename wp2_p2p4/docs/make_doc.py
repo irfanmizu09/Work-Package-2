@@ -98,7 +98,7 @@ def T(rows, widths=None, header=True, size=9):
 t = doc.add_paragraph(); t.alignment = WD_ALIGN_PARAGRAPH.LEFT
 r = t.add_run("WP2 — Early warning for P2 / P4 output failures"); r.bold = True; r.font.size = Pt(20)
 r.font.color.rgb = RGBColor.from_string("1F3864")
-P("Sensata CFT project · Work Package 2 · analysis, design decisions and build log (steps a–e)", italic=True)
+P("Sensata CFT project · Work Package 2 · analysis, design decisions and build log (steps a–f)", italic=True)
 P("Author: Irfan Ramizu · Status: in progress, 22 October 2026 · Code: `wp2_p2p4/`", italic=True, size=9.5)
 
 H("Summary")
@@ -117,9 +117,14 @@ B(["**Data and limits.** The per-device limits file is not on disk, but WP1 used
    "limit” feature had the wrong sign for drifts on the negative side.",
    "**Blind spot confirmed.** Subtracting the machine-wide move cancels a drift that hits every fixture of a "
    "machine at once (e.g. an upstream calibration offset). A machine-level detector is planned (step g).",
-   "**Steps a–e are built and checked on a sample** (3 machines, 1–14 June). On that sample, with untuned "
-   "thresholds, CUSUM and the trained trees caught 9 of 10 injected drifts, all before the first reject, where the "
-   "count rule caught 2. Evaluation on full data, whole-machine drift and export (f–h) follow."])
+   "**Result on the WP1 test split (all 20 machines, scored once).** At a budget of 0.5 false alarms per machine "
+   "per day (0.20 observed on test), the trained model caught 87 % of injected one-fixture drifts, alarmed before the "
+   "first reject in 71 % of drifts that produced rejects, after a median 9 units (0.5 h); 85 % of drift rejects were "
+   "avoidable. The count rule caught 36 %, never before a reject, with 38 % avoidable.",
+   "**But real faults are mostly machine-wide.** 64 % of the 107 real reject clusters in test coincide with clusters "
+   "on 3 or more other fixtures of the same machine and device within 12 h, and before the first reject the "
+   "machine-wide move is 2.7x its healthy size while the fixture's own departure is ~0. The per-fixture detectors "
+   "warn before only 4 % of them. The machine-level stream (step g) is therefore the priority."])
 
 # ------------------------------------------------------------------ 1
 H("1. Goal, data and rules")
@@ -238,8 +243,8 @@ T([["Step", "Content", "Status"],
    ["c. Features", "Port of features.py; key (machine, device, fixture, signal); machine move over the other fixtures", "Done"],
    ["d. Labels", "Reject-cluster run-up + drift injected into real healthy data at a known time", "Done"],
    ["e. Detectors", "Count rule (baseline), CUSUM, gradient-boosted trees, alarm tracker", "Done"],
-   ["f. Evaluation", "Time split, thresholds tuned to 0.1–2 false alarms per machine per day, test scored once", "Next"],
-   ["g. Whole-machine drift", "Inject drift on every fixture; add a machine-level stream", "Planned"],
+   ["f. Evaluation", "Time split, thresholds tuned to 0.1–2 false alarms per machine per day, test scored once", "Done"],
+   ["g. Whole-machine drift", "Inject drift on every fixture; add a machine-level stream", "Next"],
    ["h. Export", "Scored CSV and alerts CSV for a Streamlit Tab 1", "Planned"]],
   [3.4, TEXT_W - 5.2, 1.8])
 P("Evaluation split: fit on train up to about 2 July; tune on the last ~3 weeks of train (serials seen in "
@@ -370,6 +375,39 @@ B(["The count rule acts after the damage (it needs 3 rejects), as Trace Sentinel
    "The features most related to the label are the short departure (|d_s|), CUSUM, the medium departure "
    "and the trend towards the limit; the reject-count features carry almost nothing before the first reject."])
 
+H("6.6 Step f — evaluation (evaluate.py)", 2)
+P("Slices: fit = train before 2 July (62 days; trees trained here), tune = train from 2 July (21 days; thresholds "
+  "chosen here), test = the WP1 test split (23 July – 12 August, 20 days; scored once). One first pass per serial, "
+  "so serials are disjoint (checked). The feature state streams through all slices in time order. 771 one-fixture "
+  "drifts were injected over the whole period (443 / 175 / 153 per slice), half “large” (Trace Sentinel’s ranges) "
+  "and half “small” (steps 10–30 % tol, ramps 1–6 % tol/h). Thresholds are tuned per false-alarm budget with "
+  "train.py’s bisection; the count rule is the floor’s fixed rule. Two implementation changes made this tractable: "
+  "an event-driven alarm tracker (identical events, ~6× faster) and threshold candidates spaced geometrically "
+  "towards the top of the score range (the trees put most of their range in the top 1 % of scores). Feature "
+  "replay runs one machine per CPU core (16 min end to end).")
+P("Test slice: 1,243,309 rows, base rate 1.49 % drift rows; row-level PR-AUC count rule 0.015, CUSUM 0.80, trained 0.95.", bold=True)
+T([["Detector", "Budget", "FA/m/day (test)", "Detected", "Alarm before 1st reject", "Delay units / h", "Avoidable", "Small drifts detected"],
+   ["Count rule", "—", "0.08", "36 %", "0 %", "54 / 4.1", "38 %", "13 %"],
+   ["CUSUM", "0.1", "0.13", "77 %", "52 %", "26 / 1.4", "68 %", "67 %"],
+   ["CUSUM", "0.5", "0.39", "84 %", "61 %", "13 / 0.8", "82 %", "74 %"],
+   ["CUSUM", "1", "0.83", "86 %", "68 %", "9 / 0.6", "86 %", "75 %"],
+   ["Trained", "0.1", "0.03", "84 %", "73 %", "12 / 0.8", "84 %", "76 %"],
+   ["Trained", "0.5", "0.20", "87 %", "71 %", "9 / 0.5", "85 %", "79 %"],
+   ["Trained", "1", "0.67", "89 %", "74 %", "8 / 0.5", "87 %", "82 %"]],
+  [2.0, 1.3, 2.0, 1.8, 2.5, 2.4, 1.9, TEXT_W - 13.9], size=8.5)
+B(["The trained model gives the best trade-off: at 0.1 false alarms per machine per day it already beats CUSUM at "
+   "0.5. Test false alarms stayed within every budget (e.g. 0.20 at budget 0.5, 1.47 at budget 2), so thresholds "
+   "chosen on the tune slice transfer to the test period.",
+   "False warnings run at about 1.2–1.6 per machine per day for both detectors (warning budget = max(2, 2 × alarm "
+   "budget), as in train.py). That may be too many for operators; the warning level can be tightened or hidden.",
+   "**Real reject clusters (107 in test)** are caught by the count rule (96 %, by construction after the 3rd reject; "
+   "15 % before the 1st because some clusters follow earlier rejects) but warned before the first reject by the "
+   "per-fixture detectors only 4 % of the time at budget 0.5 (20–41 % at budget 2). Diagnosis: 64 % of these clusters "
+   "coincide with clusters on ≥ 3 other fixtures of the same machine and device within 12 h; in the 50 units before "
+   "the first reject the fixture’s own departure is ~0 (|d_m| 0.07) while the machine-wide move is 7.8 % tol "
+   "(healthy 2.9 %) and |v| is 29.5 % (healthy 18.7 %). These are machine-wide events that the per-fixture design "
+   "subtracts. Device 83MPP08-02 alone accounts for 38 of them."])
+
 # ------------------------------------------------------------------ 7
 H("7. Open questions and assumptions")
 B(["Real DPSCFTLimits file, ideally with revision history (confirms the two band exceptions).",
@@ -390,6 +428,7 @@ T([["File (wp2_p2p4/)", "Purpose", "Run"],
    ["labels_demo.py", "Step d checks", "`python labels_demo.py`"],
    ["detectors.py", "Count rule, CUSUM, trained trees, alarm tracker", "library"],
    ["detectors_demo.py", "Step e check (train week 1, score week 2)", "`python detectors_demo.py`"],
+   ["evaluate.py", "Step f: fit / tune / test, budget curve, cached features", "`python evaluate.py --machines \"\"`"],
    ["out/", "Generated files (limits.csv, logs, salt); git-ignored", "—"]],
   [3.8, 6.8, TEXT_W - 10.6], size=8.5)
 P("Interpreter: `.venv/Scripts/python.exe` (populate with `uv sync --frozen`). Run from `wp2_p2p4/`.")

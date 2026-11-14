@@ -93,9 +93,17 @@ def _salt():
         return bytes.fromhex(f.read().strip())
 
 
+def _serial_text(x):
+    """Numeric serials hash as before (str(int)); raw exports may carry text serials or blanks."""
+    try:
+        return str(int(x))
+    except (TypeError, ValueError):
+        return str(x).strip()
+
+
 def unit_keys(serials):
     salt = _salt()
-    return [hashlib.blake2b(str(int(x)).encode(), key=salt, digest_size=8).hexdigest() for x in serials]
+    return [hashlib.blake2b(_serial_text(x).encode(), key=salt, digest_size=8).hexdigest() for x in serials]
 
 
 def status_cat(status):
@@ -147,9 +155,17 @@ def load(split, machines=None, start=None, end=None, lim=None, raw=False):
         f.append(("testtime", ">=", pd.Timestamp(start)))
     if end is not None:
         f.append(("testtime", "<", pd.Timestamp(end)))
-    cols = ["serialno", *KEYS, "failed", "status"] + \
-           [f"{s}{c}" for s in SIGNALS for c in ("press", "output", "error", "_tested")]
-    d = read(split, cols, filters=f)
+    d = read(split, COLUMNS, filters=f)
+    return prepare(d, lim, raw).sort_values(KEYS[:2] + ["fixture"], kind="stable").reset_index(drop=True)
+
+
+COLUMNS = ["serialno", *KEYS, "failed", "status"] + \
+          [f"{s}{c}" for s in SIGNALS for c in ("press", "output", "error", "_tested")]
+
+
+def prepare(d, lim=None, raw=False):
+    """The step-a rules on a table already in memory (a WP1 split, a raw export, a live chunk).
+    d needs COLUMNS with clean types; the result keeps d's index. First passes are not filtered here."""
     lim = limits() if lim is None else lim
     out = d[KEYS + ["failed"]].copy()
     out.insert(0, "unit_key", unit_keys(d.serialno))
@@ -181,7 +197,7 @@ def load(split, machines=None, start=None, end=None, lim=None, raw=False):
             out[f"output_{s}"], out[f"error_{s}"] = o, e
     if raw:
         out["status"] = d.status
-    return out.sort_values(KEYS[:2] + ["fixture"], kind="stable").reset_index(drop=True)
+    return out
 
 
 def summary(d):

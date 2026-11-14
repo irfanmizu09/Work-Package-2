@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "WP2 drift monitor (Streamlit)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "wp2_p2p4/app.py"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": true
+    },
+    {
+      "name": "WP2 train and save model (alerts.py --train)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/wp2_p2p4/alerts.py",
+      "args": ["--train"],
+      "cwd": "${workspaceFolder}/wp2_p2p4",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "WP2 alert list on test data (alerts.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/wp2_p2p4/alerts.py",
+      "cwd": "${workspaceFolder}/wp2_p2p4",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "console": "integratedTerminal"
+    }
+  ]
+}
