@@ -8,6 +8,10 @@ Integrate the WP2 P2/P4 drift monitor into Trace Sentinel in this repo, on branc
 inside the existing Docker setup and show on the existing dashboard. Models must be plug and play: a new model
 is a folder that I import, try in shadow, activate and roll back, with no code change and no restart.
 
+The goal is to put the predictive model inside Trace Sentinel. The interface stays the dashboard's own: same
+tabs, layout, components, colours, wording style, alert banner, sound and light. Don't redesign anything, and
+don't add a new tab or page. The model's output appears through the components the dashboard already has.
+
 ## Ground rules
 
 - Work on `irfan_study` only (it tracks `origin/irfan_study`). Changes in this repo are allowed. Commit after
@@ -114,8 +118,9 @@ registered by name with a decorator.
 - API: the same under `/api/models` (add `?monitor=`).
 - The engine hot-swaps per monitor as today.
 - A **shadow** model is scored on the same feature rows as the active one. It writes to a `shadow_alerts`
-  table and never raises the light or sound. The Backend tab shows active vs shadow side by side
-  (raises, false alarms per machine per day, agreement), so a new model is proven before it goes live.
+  table and never raises the light or sound. The Backend tab's existing model table shows its numbers
+  (raises, false alarms per machine per day, agreement with the active model), so a new model is proven
+  before it goes live.
 
 ## Steps (one at a time, wait for my "next" after each)
 
@@ -163,15 +168,22 @@ registered by name with a decorator.
    for `sentinel evaluate` on the new monitor, and makes the "Mark recalibrated" flow testable. Random
    episodes end the way WP2 assumes: after 5 drift rejects or 14 h, with a recal.
 6. **Dashboard** (`trace-sentinel-realdata.html`, live mode only; replay mode and the offline demo stay as
-   they are, and say so in the page):
-   - **CFT Stream tab:** a "Tester fixtures" grid (tester × fixture, coloured by level per signal) and
-     tester-fixture alerts in the banner, labelled "tester fixture" so nobody confuses them with
-     calibration alerts.
-   - **Report tab:** tester-fixture alerts with level, shift, units to limit, the "why" features, and
-     "Mark recalibrated" with finding and note.
-   - **Backend tab:** models grouped by monitor, with Import status / Shadow / Activate / Rollback,
-     operating point, the manifest's metrics (with base rate), and the shadow-vs-active comparison.
-   - In shadow mode, show a banner on the tester section: "Shadow mode: do not act on these alerts".
+   they are). **Follow the dashboard's existing UI; the only change is that the new model's results appear
+   in it.**
+   - **Before you edit, list for me** which existing components will carry the tester-fixture alerts (the
+     alert banner, the alert list and cards, the CFT Stream tab, which already shows the testers, the Report
+     tab's alert table and "Mark recalibrated", and the Backend tab's model list). Name any place where the
+     dashboard has nowhere to put something, and wait for my OK.
+   - Reuse those components and their CSS classes as they are. Tester-fixture alerts go through the same
+     banner, cards, sound and light as calibration alerts. They differ only in their text: "tester CFT-1 ·
+     fixture 7 · P2" instead of a cal machine and group.
+   - Model controls (import status, shadow, activate, rollback, operating point, metrics with the base rate)
+     go into the Backend tab's existing model section as rows of the same table, grouped by monitor. They do
+     not get a new panel.
+   - Add new elements only where nothing existing fits, and style them with the dashboard's own classes. If
+     the Floor Map, which is laid out by calibration machine, can't show tester fixtures without a redesign,
+     leave it unchanged and say so.
+   - Shadow-model results are not shown as alerts. Show them only as numbers in the Backend tab's model rows.
 7. **Docker.**
    - The image still copies only `sentinel/` and the dashboard, so the new code is included. No data or
      models go in the image.
@@ -194,7 +206,8 @@ registered by name with a decorator.
 
 - Pytest passes, including the new contract, parity, checkpoint-resume, fast-vs-slow and swap tests.
 - The calibration monitor's evaluate numbers are identical to step 0.
-- In Docker, the dashboard shows both monitors. A WP2 model package can be imported, shadowed, activated
+- In Docker, the dashboard looks and works as before, and the tester-fixture alerts appear in its existing
+  banner, alert list and Report tab. A WP2 model package can be imported, shadowed, activated
   and rolled back without a restart. A package for the wrong monitor or feature set is refused.
 - No serial numbers or Sensata data in git or the image.
 
