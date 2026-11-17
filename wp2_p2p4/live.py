@@ -6,6 +6,10 @@ Same steps as the offline scripts, one chunk of rows at a time, in time order:
   features   features.FeatureEngine (step c), state kept between chunks
   score      saved trees (alerts.py --train) or CUSUM (step e)
   alarm      detectors.AlarmTracker per machine / device / fixture / signal (step e)
+  recal      recalibration events (recal.py) queued with add_recals(); each is applied before the first
+             unit tested at or after its time (as features.replay), or by apply_due(now): the fixture's
+             streams restart and re-learn their centre, the tracker resets, open alerts close as
+             "recalibrated"
 
 Two kinds of output:
   flags      one row per problem with ONE unit: which columns, which values, what it means
@@ -126,6 +130,64 @@ class Live:
         self.alerts, self.events = [], []
         self.n = {"rows": 0, "first_pass": 0, "readings": 0, "scored": 0}
         self.clock = None
+        self.pending = []             # recal events not applied yet: (t ns, machine, device, fixture, signal, finding, note)
+        self.recal_log = []           # recal events applied: what was reset and closed
+
+    # ------------------------------------------------------------------ recalibration
+    def add_recals(self, ev):
+        """Queue recal events (recal.read() table, or the same columns). Each is applied before the first
+        unit tested at or after its time, as features.replay does, or by apply_due(). An event older than
+        the data already fed is applied at once (logged late; units in between kept the old state)."""
+        if ev is None or len(ev) == 0:
+            return []
+        ev = ev.sort_values("time", kind="stable")
+        t = pd.to_datetime(ev.time).to_numpy().astype("datetime64[ns]").astype("int64")
+        dev = [None if (x is None or x != x or str(x).strip() in ("", "*")) else str(x).strip() for x in ev.deviceid]
+        get = lambda c: ev[c].fillna("").astype(str).to_numpy() if c in ev else [""] * len(ev)
+        new = list(zip(t, ev.equipmentid.astype(int), dev, ev.fixture.astype(int), ev.signal.astype(str),
+                       get("finding"), get("note")))
+        self.pending = sorted(self.pending + new, key=lambda r: r[0])
+        if self.clock is not None:
+            return self.apply_due(self.clock)
+        return []
+
+    def apply_due(self, now):
+        """Apply every queued event with time <= now. Call it when no more rows older than `now` can
+        arrive (the app's "Mark recalibrated" button, the shadow runner's watermark)."""
+        now = pd.Timestamp(now).value
+        out = []
+        while self.pending and self.pending[0][0] <= now:
+            r = self.pending.pop(0)
+            out += self._recal_alerts(r, self.fe.recal(*r[1:5]))
+        self.events.extend(out)
+        return out
+
+    def _recal_alerts(self, r, keys):
+        """Tracker and alert side of one applied recal: reset each stream, close its open alert."""
+        t, machine, dev, fixture, signal, finding, note = r
+        ts = pd.Timestamp(int(t))
+        quiet = self.report_from is not None and ts < self.report_from
+        out, closed = [], []
+        for k in keys:
+            key = (int(k[0]), str(k[1]), int(k[2]), k[3])
+            self.tr.reset(key)
+            i = self.open.pop(key, None)
+            if i is not None:
+                a = self.alerts[i]
+                a["cleared"], a["cleared_reason"] = ts, "recalibrated"
+                closed.append(key)
+                if not quiet:
+                    out.append({"type": "cleared", "time": ts, "key": key, "alert": a, "reason": "recalibrated"})
+            g = (key[0], key[1], key[3])
+            if sum((o[0], o[1], o[3]) == g for o in self.open) < 2:
+                self.groups.discard(g)
+        self.recal_log.append({"time": ts, "equipmentid": machine, "deviceid": dev or "", "fixture": fixture,
+                               "signal": signal, "finding": finding, "note": note, "streams_reset": len(keys),
+                               "alerts_closed": len(closed)})
+        if not quiet:
+            out.insert(0, {"type": "recal", "time": ts, "key": (machine, dev, fixture, signal), "finding": finding,
+                           "note": note, "streams": [tuple(k) for k in keys], "closed": closed})
+        return out
 
     # one chunk of raw rows, any size, in time order after the previous chunk
     def feed(self, raw):
@@ -204,6 +266,9 @@ class Live:
               for s in load.SIGNALS}
         todo, F = [], []
         for i in range(len(p)):
+            while self.pending and self.pending[0][0] <= t[i]:      # recal before the first unit at/after it
+                r = self.pending.pop(0)
+                todo.append(("recal", r, self.fe.recal(*r[1:5])))
             for s in load.SIGNALS:
                 v, kind, bo, o, e = (a[i] for a in sv[s])
                 if v != v:
@@ -221,7 +286,11 @@ class Live:
         self.n["scored"] += len(F)
         scores, F = iter(self.det.scores(F)), iter(F)
         events = []
-        for key, ti, ex, bo, unit in todo:
+        for item in todo:
+            if item[0] == "recal":
+                events += self._recal_alerts(item[1], item[2])
+                continue
+            key, ti, ex, bo, unit = item
             # history in time order, so an alert lists only the units tested up to its own raise
             h = self.hist.get(key)
             if h is None:
@@ -299,9 +368,10 @@ class Live:
     def alert_table(self, serials=False):
         cols = ["raised", "level", "equipmentid", "deviceid", "fixture", "signal", "drift_start", "shift_pct",
                 "level_pct", "units_to_limit", "score", "band_ok", "cleared"]
-        rows = [{**{c: a[c] for c in cols}, "units_since_start": len(a["units"]), "why": "; ".join(w[0] for w in a["why"])}
+        rows = [{**{c: a[c] for c in cols}, "cleared_by": a.get("cleared_reason") or ("back to normal" if a["cleared"] is not None else ""),
+                 "units_since_start": len(a["units"]), "why": "; ".join(w[0] for w in a["why"])}
                 for a in self.alerts if not a.get("hidden")]
-        t = pd.DataFrame(rows, columns=cols + ["units_since_start", "why"])
+        t = pd.DataFrame(rows, columns=cols + ["cleared_by", "units_since_start", "why"])
         for c in ("shift_pct", "level_pct", "units_to_limit", "score"):
             t[c] = pd.to_numeric(t[c]).round(3 if c == "score" else 1)
         t["signal"] = t.signal.str.upper()

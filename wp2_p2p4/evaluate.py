@@ -16,6 +16,11 @@ the first reject, delay in units of that fixture and in hours, avoidable rejects
 the alarm). Outside episodes and real clusters: false alarms per machine per day. A raise inside a
 real cluster window is not counted as false, so the false-alarm figure is an upper bound only for
 faults nobody recorded.
+
+--recal-at-episode-end: each episode ends with a recalibration of its fixture (episode_recals), applied
+by the feature engine (relearn the centre) and the alarm tracker (open alerts close "recalibrated") exactly
+as live.Live applies out/recal_events.csv. Off by default: without recal events every number is unchanged
+(check_baseline.py). Results then go to eval_<tag>_recalend.*.
 """
 import argparse
 import json
@@ -41,12 +46,24 @@ MAX_NEG = 3_000_000                        # negatives kept for fitting the tree
 
 
 # ------------------------------------------------------------------ data
-def _replay_one(d):
-    return fx.replay(d)
+def _replay_one(arg):
+    d, rec = arg
+    return fx.replay(d, recals=rec)
 
 
-def build(machines=None, seed=0, workers=8, per_machine_day=0.5, refresh=False):
-    tag = ("all" if machines is None else "m" + "-".join(map(str, machines))) + f"_s{seed}"
+def episode_recals(eps):
+    """Each injected episode ends the way the floor ends a drift today (labels.py: after MAX_REJ drift rejects,
+    or MAX_H hours): the fixture is recalibrated. As a recal event: just after the episode's last affected
+    unit, the whole fixture (every device, both signals), as live.Live would get it from recal_events."""
+    e = eps[eps.fixture >= 0]
+    return pd.DataFrame({"time": pd.to_datetime(e.end) + pd.Timedelta(microseconds=1), "equipmentid": e.equipmentid,
+                         "deviceid": "", "fixture": e.fixture, "signal": "both"})
+
+
+def build(machines=None, seed=0, workers=8, per_machine_day=0.5, refresh=False, recal_at_end=False):
+    """recal_at_end: treat the end of each injected episode as a recalibration (episode_recals), so the
+    offline numbers follow what the live pipeline does after a recal. Off = the original evaluation."""
+    tag = ("all" if machines is None else "m" + "-".join(map(str, machines))) + f"_s{seed}" +         ("_recalend" if recal_at_end else "")
     fp, ep_p, rj_p = (os.path.join(load.OUT, f"{n}_{tag}.{x}") for n, x in
                       (("feat", "parquet"), ("eps", "parquet"), ("injrej", "parquet")))
     if not refresh and all(os.path.exists(p) for p in (fp, ep_p, rj_p)):
@@ -63,9 +80,13 @@ def build(machines=None, seed=0, workers=8, per_machine_day=0.5, refresh=False):
     eps = lb.make_episodes(d, "fixture", per_machine_day=per_machine_day, seed=seed, sizes=("large", "small"))
     d2, eps = lb.apply(d, eps)
     print(f"  injected {len(eps)} episodes ({time.time() - t0:.0f}s)", flush=True)
-    parts = [g for _, g in d2.groupby("equipmentid")]
+    rec = episode_recals(eps) if recal_at_end else None
+    parts = [(g, None if rec is None else rec[rec.equipmentid == m]) for m, g in d2.groupby("equipmentid")]
     with Pool(min(workers, len(parts))) as pool:
-        res = pool.map(_replay_one, sorted(parts, key=len, reverse=True))
+        res = pool.map(_replay_one, sorted(parts, key=lambda x: len(x[0]), reverse=True))
+    if rec is not None:
+        print(f"  {len(rec)} recal events at episode ends; {sum(int(r[0].recal.sum()) for r in res)} streams reset",
+              flush=True)
     meta = pd.concat([r[0] for r in res], ignore_index=True)
     F = np.vstack([r[1] for r in res])
     o = np.argsort(meta.testtime.to_numpy(), kind="stable")
@@ -114,11 +135,15 @@ class Scorer:
         self.eps = eps[(eps.start >= t0) & (eps.start <= t1)].reset_index(drop=True)
         self.clusters = clusters[(clusters.first_t >= t0) & (clusters.first_t <= t1)].reset_index(drop=True)
         self.rejt = {k: np.sort(g.testtime.to_numpy()) for k, g in rj.groupby("ep_id")}
+        rc = "recal" in self.meta
+        self.resets = self.meta.recal.to_numpy() if rc else None
+        self.reset_times = self.meta.recal_time.to_numpy() if rc else None
         self.machines = self.meta.equipmentid.nunique()
         self.days = max(1e-9, (t1 - t0).total_seconds() / 86400)
 
     def events(self, scores, thr, persist):
-        return dt.alarm_events_fast(self.meta, scores, thr, persist, groups=self.groups)
+        return dt.alarm_events_fast(self.meta, scores, thr, persist, groups=self.groups, resets=self.resets,
+                                    reset_times=self.reset_times)
 
     def score(self, ev, detail=False):
         raises = ev[ev["to"].isin(["warning", "alarm"])].reset_index(drop=True)
@@ -205,9 +230,9 @@ def tune(sc, scores, budget, warn_budget, persist):
 
 
 # ------------------------------------------------------------------ run
-def run(machines=None, seed=0, workers=8, refresh=False, persist=3):
+def run(machines=None, seed=0, workers=8, refresh=False, persist=3, recal_at_end=False):
     t0 = time.time()
-    meta, F, eps, rj, tag = build(machines, seed, workers, refresh=refresh)
+    meta, F, eps, rj, tag = build(machines, seed, workers, refresh=refresh, recal_at_end=recal_at_end)
     t_test = load.read("test", ["testtime"]).testtime.min()
     sl = np.select([meta.testtime < T_TUNE, meta.testtime < t_test], ["fit", "tune"], "test")
     ok = meta.band_ok.to_numpy()
@@ -231,9 +256,10 @@ def run(machines=None, seed=0, workers=8, refresh=False, persist=3):
     sc = {s: Scorer(meta[(sl == s) & ok], eps, rj, clusters) for s in ("tune", "test")}
     Fs = {s: F[(sl == s) & ok] for s in ("tune", "test")}
     ys = y[(sl == "test") & ok]
-    results, curves = {}, []
+    results, curves, prs = {}, [], []
     cr = dt.CountRule()
     s_te = cr.scores(Fs["test"])
+    prs.append(pr_row("count-rule", None, s_te, ys, cr.thresholds))
     results["count-rule"] = {"thresholds": cr.thresholds, "pr_auc": round(average_precision_score(ys, s_te), 4),
                              "test": sc["test"].score(sc["test"].events(s_te, cr.thresholds, 1))}
     for det in (dt.Cusum(), tree):
@@ -244,6 +270,7 @@ def run(machines=None, seed=0, workers=8, refresh=False, persist=3):
             st = sc["test"].score(sc["test"].events(s_te, th, persist))
             results[det.kind]["curve"].append({"budget": b, "thresholds": th, **st})
             curves.append({"detector": det.kind, "budget": b, **{k: round(v, 3) for k, v in th.items() if v is not None}, **st})
+            prs.append(pr_row(det.kind, b, s_te, ys, th))
             print(f"  {det.kind:<8} budget {b:<4} tuned {th}  ({time.time() - t0:.0f}s)", flush=True)
     results["base_rate_test"] = round(float(ys.mean()), 5)
     curves.insert(0, {"detector": "count-rule", "budget": None, **results["count-rule"]["test"]})
@@ -252,8 +279,33 @@ def run(machines=None, seed=0, workers=8, refresh=False, persist=3):
         json.dump(results, f, indent=1, default=str)
     tab.to_csv(os.path.join(load.OUT, f"eval_{tag}.csv"), index=False)
     report(tab, results)
+    pr = pd.DataFrame(prs)
+    pr.to_csv(os.path.join(load.OUT, f"eval_{tag}_pr.csv"), index=False)
+    print(f"\nROW-LEVEL precision / recall on the test slice at the tuned thresholds (score >= threshold; "
+          f"base rate {results['base_rate_test']:.3%}, i.e. a random flag is right {results['base_rate_test']:.1%} "
+          f"of the time). Saved out/eval_{tag}_pr.csv")
+    print(pr.to_string(index=False))
     print(f"\ndone in {time.time() - t0:.0f}s; saved out/eval_{tag}.json and .csv")
     return tab, results
+
+
+def pr_row(kind, budget, scores, y, th):
+    """Row-level precision and recall of `score >= threshold` against the drift label, at the alarm and
+    the warning threshold. Rows are not independent (one drift = many rows), so these complement the
+    episode numbers; they do not replace them."""
+    out = {"detector": kind, "budget": budget, "positives": int(y.sum()), "rows": len(y),
+           "base_rate": round(float(y.mean()), 5)}
+    for name in ("alarm", "warn"):
+        t = th.get(name)
+        if t is None:
+            out.update({f"{name}_flagged": None, f"{name}_precision": None, f"{name}_recall": None})
+            continue
+        f = scores >= t
+        tp = int((f & (y == 1)).sum())
+        out.update({f"{name}_flagged": int(f.sum()),
+                    f"{name}_precision": round(tp / f.sum(), 3) if f.any() else None,
+                    f"{name}_recall": round(tp / max(1, int(y.sum())), 3)})
+    return out
 
 
 def report(tab, results):
@@ -274,5 +326,9 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--refresh", action="store_true", help="rebuild the cached features")
+    ap.add_argument("--recal-at-episode-end", action="store_true",
+                    help="each injected episode ends with a recalibration of its fixture (as live); "
+                         "results go to eval_<tag>_recalend.*")
     a = ap.parse_args()
-    run([int(m) for m in a.machines.split(",")] if a.machines else None, a.seed, a.workers, a.refresh)
+    run([int(m) for m in a.machines.split(",")] if a.machines else None, a.seed, a.workers, a.refresh,
+        recal_at_end=a.recal_at_episode_end)

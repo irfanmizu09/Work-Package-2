@@ -7,9 +7,12 @@ same maths; what changed:
                  instead of 3). A machine runs several devices, and each device has its own centre.
   noise sigma    shared by the fixtures of one (machine, device, signal)
   reject         the tester's status (step b), out-of-band rejects only; |v| > 100 is not used
-  no recal       there are no recalibration records, so no resets from them. Instead, a group that has
-                 not tested for GAP_H hours (device changeover) restarts its averages and CUSUM at
-                 its centre; the centre itself is kept.
+  recal          recalibration events (recal.py, out/recal_events.csv) reset the fixture: averages,
+                 CUSUM and reject window restart, and by default ("relearn") the centre is learnt again
+                 from the next RELEARN = 60 measured units, because a recalibrated fixture may settle at
+                 a new centre (recal_demo.py: 3/19 recals followed by a false raise vs 12/19 when the
+                 old centre is kept). Separately, a group that has not tested for GAP_H hours (device
+                 changeover) restarts its averages and CUSUM at its centre; the centre itself is kept.
   time           real testtime; the CUSUM onset is a timestamp.
   noise infl.    units are NOT independent here (lag-1 autocorrelation of the residual ~0.3; 50-unit
                  averages wander 0.4-4.7x more than independent units would). Fed with per-unit z,
@@ -249,18 +252,19 @@ def replay(d, fe=None, signals=SIGNALS, near_pct=80.0, inject=None, recals=None)
     inject(signal, i) -> offset in % tol added to v (drift injection, step d); None = real data.
     recals: recal_events table (time, equipmentid, deviceid, fixture, signal); each event is applied
     before the first unit tested at or after its time. With recals, meta gets a column `recal`: True on
-    the first feature row of a stream after a recalibration (the alarm tracker resets there)."""
+    the first feature row of a stream after a recalibration (the alarm tracker resets there), and
+    `recal_time`: when that recalibration was logged (an open alert is closed at that time)."""
     fe = fe or FeatureEngine(near_pct)
     d = d.sort_values(["testtime", "equipmentid", "fixture"], kind="stable")
     t = d.testtime.to_numpy().astype("datetime64[ns]").astype("int64")     # parquet stores us
-    rl, ri, fresh = recal_list(recals), 0, set()
+    rl, ri, fresh = recal_list(recals), 0, {}
     cols = {k: d[k].to_numpy() for k in ("unit_key", "equipmentid", "deviceid", "fixture")}
     sv = {s: (d[f"v_{s}"].to_numpy(dtype=float), (d[f"kind_{s}"] == "out_of_band").to_numpy(),
               d[f"band_ok_{s}"].to_numpy()) for s in signals}
     rows, F, flag = [], [], []
     for i in range(len(d)):
         while ri < len(rl) and rl[ri][0] <= t[i]:
-            fresh.update(fe.recal(*rl[ri][1:]))
+            fresh.update(dict.fromkeys(fe.recal(*rl[ri][1:]), rl[ri][0]))
             ri += 1
         for s in signals:
             v, rj, bo = sv[s][0][i], sv[s][1][i], sv[s][2][i]
@@ -277,11 +281,12 @@ def replay(d, fe=None, signals=SIGNALS, near_pct=80.0, inject=None, recals=None)
             F.append(f)
             if rl:
                 k = (cols["equipmentid"][i], cols["deviceid"][i], cols["fixture"][i], s)
-                flag.append(k in fresh)
-                fresh.discard(k)
+                flag.append(fresh.pop(k, -1))
     meta = pd.DataFrame(rows, columns=META)
     if rl:
-        meta["recal"] = np.array(flag, dtype=bool)
+        rt = np.array(flag, dtype="int64")
+        meta["recal"] = rt >= 0
+        meta["recal_time"] = pd.to_datetime(np.where(rt >= 0, rt, np.iinfo("int64").min).astype("datetime64[ns]"))
     meta["testtime"] = pd.to_datetime(meta.testtime)
     meta["onset"] = pd.to_datetime(meta.onset)
     return meta, (np.array(F, dtype=float) if F else np.zeros((0, len(FEATS))))

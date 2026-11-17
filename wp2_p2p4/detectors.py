@@ -97,20 +97,22 @@ class AlarmTracker:
         return None if s["level"] == prev else (prev, s["level"])
 
 
-def alarm_events(meta, scores, thresholds, persist=3, clear_n=60, resets=None):
+def alarm_events(meta, scores, thresholds, persist=3, clear_n=60, resets=None, reset_times=None):
     """Run the tracker over meta (time order). Returns level changes and each row's level.
     resets: bool per row (features.replay meta.recal) - the stream was recalibrated just before this row:
-    an open warning / alarm closes there (event to "ok", reason "recalibrated") and the tracker restarts.
-    With resets the events get a `reason` column ("" or "recalibrated")."""
+    an open warning / alarm closes (event to "ok", reason "recalibrated") and the tracker restarts.
+    reset_times (meta.recal_time): the closing event carries the recalibration's own time, not the row's
+    (after a relearn the next scored row can be hours later). With resets the events get a `reason` column."""
     tr = AlarmTracker(thresholds.get("warn"), thresholds["alarm"], persist=persist, clear_n=clear_n)
     keys = list(zip(*(meta[k].to_numpy() for k in KEY)))
     t = meta.testtime.to_numpy()
+    rt = t if reset_times is None else np.asarray(reset_times, dtype=t.dtype)
     ev, level = [], np.empty(len(meta), dtype=object)
     for i in range(len(meta)):
         if resets is not None and resets[i]:
             lv = tr.level(keys[i])
             if lv != "ok":
-                ev.append((t[i], *keys[i], lv, "ok", np.nan, i, "recalibrated"))
+                ev.append((rt[i], *keys[i], lv, "ok", np.nan, i, "recalibrated"))
             tr.reset(keys[i])
         ch = tr.update(keys[i], scores[i])
         if ch:
@@ -134,44 +136,61 @@ def key_groups(meta):
     return [(k, idx[np.argsort(t[idx], kind="stable")]) for k, idx in g.items()]
 
 
-def alarm_events_fast(meta, scores, thresholds, persist=3, clear_n=60, groups=None):
+def _segment(key, idx, s, t, warn, alarm, low, persist, clear_n, ev, tag):
+    """Tracker events of one key over one stretch of rows that starts at "ok"; returns the final level."""
+    hi = s >= alarm
+    wa = hi | (s >= warn) if warn is not None else hi
+    if not wa.any():
+        return "ok"
+    A = np.flatnonzero(_run(hi) >= persist)
+    W = np.flatnonzero(_run(wa) >= persist)
+    C = np.flatnonzero(_run(s < low) >= clear_n)
+    nxt = lambda arr, p: arr[k] if (k := np.searchsorted(arr, p)) < len(arr) else np.inf
+    p, level = 0, "ok"
+    while True:
+        if level == "ok":
+            a, w = nxt(A, p), nxt(W, p)
+            if a == np.inf and w == np.inf:
+                break
+            i, new = (int(a), "alarm") if a <= w else (int(w), "warning")
+        elif level == "warning":
+            a, c = nxt(A, p), nxt(C, p)
+            if a == np.inf and c == np.inf:
+                break
+            i, new = (int(a), "alarm") if a <= c else (int(c), "ok")
+        else:
+            c = nxt(C, p)
+            if c == np.inf:
+                break
+            i, new = int(c), "ok"
+        ev.append((t[idx[i]], *key, level, new, s[i], idx[i]) + tag)
+        level, p = new, i + 1
+    return level
+
+
+def alarm_events_fast(meta, scores, thresholds, persist=3, clear_n=60, groups=None, resets=None,
+                      reset_times=None):
     """Same events as alarm_events, but jumps from event to event with run lengths instead of
-    stepping through every row (tuning runs the tracker hundreds of times)."""
+    stepping through every row (tuning runs the tracker hundreds of times). resets / reset_times as in
+    alarm_events: each key's rows are cut at its resets and every stretch starts again at "ok"."""
     warn, alarm = thresholds.get("warn"), thresholds["alarm"]
     groups = groups if groups is not None else key_groups(meta)
     t = meta.testtime.to_numpy()
+    rt = t if reset_times is None else np.asarray(reset_times, dtype=t.dtype)
     low = (warn if warn is not None else alarm) * 0.8
+    tag = () if resets is None else ("",)
     ev = []
     for key, idx in groups:
         s = scores[idx]
-        hi = s >= alarm
-        wa = hi | (s >= warn) if warn is not None else hi
-        if not wa.any():
-            continue
-        A = np.flatnonzero(_run(hi) >= persist)
-        W = np.flatnonzero(_run(wa) >= persist)
-        C = np.flatnonzero(_run(s < low) >= clear_n)
-        nxt = lambda arr, p: arr[k] if (k := np.searchsorted(arr, p)) < len(arr) else np.inf
-        p, level = 0, "ok"
-        while True:
-            if level == "ok":
-                a, w = nxt(A, p), nxt(W, p)
-                if a == np.inf and w == np.inf:
-                    break
-                i, new = (int(a), "alarm") if a <= w else (int(w), "warning")
-            elif level == "warning":
-                a, c = nxt(A, p), nxt(C, p)
-                if a == np.inf and c == np.inf:
-                    break
-                i, new = (int(a), "alarm") if a <= c else (int(c), "ok")
-            else:
-                c = nxt(C, p)
-                if c == np.inf:
-                    break
-                i, new = int(c), "ok"
-            ev.append((t[idx[i]], *key, level, new, s[i], idx[i]))
-            level, p = new, i + 1
-    out = pd.DataFrame(ev, columns=["testtime", *KEY, "from", "to", "score", "row"])
+        cuts = [0] if resets is None else [0, *np.flatnonzero(resets[idx][1:]) + 1]
+        cuts.append(len(idx))
+        level = "ok"
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            if a > 0 and level != "ok":                  # recalibrated with an alert open
+                ev.append((rt[idx[a]], *key, level, "ok", np.nan, idx[a], "recalibrated"))
+            level = _segment(key, idx[a:b], s[a:b], t, warn, alarm, low, persist, clear_n, ev, tag)
+    cols = ["testtime", *KEY, "from", "to", "score", "row"] + (["reason"] if resets is not None else [])
+    out = pd.DataFrame(ev, columns=cols)
     return out.sort_values("row", kind="stable").reset_index(drop=True)
 
 

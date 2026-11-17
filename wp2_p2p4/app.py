@@ -100,7 +100,19 @@ def alert_card(ev, expanded=False):
                 f"{', '.join(map(str, ev['fixtures']))} are in alert together ({ev['time']:%d %b %H:%M}). "
                 f"Levels {lv} % tol. A whole set moving points to the machine (or calibration), not one fixture.")
         return
+    if ev["type"] == "recal":
+        m, dv, fx_, s = ev["key"]
+        st.info(f"**Recalibrated: machine {m} · fixture {fx_} · {s.upper()}"
+                f"{' · device ' + dv if dv else ''}** ({ev['time']:%d %b %H:%M}; {ev['finding'] or 'no finding'})"
+                f"{': ' + ev['note'] if ev['note'] else ''}. {len(ev['streams'])} stream(s) re-learn their centre "
+                f"from the next 60 units; {len(ev['closed'])} open alert(s) closed.")
+        return
     a = ev["alert"]
+    if ev["type"] == "cleared" and ev.get("reason") == "recalibrated":
+        st.success(f"Closed, recalibrated: machine {a['equipmentid']} · device {a['deviceid']} · fixture "
+                   f"{a['fixture']} · {a['signal'].upper()} ({ev['time']:%d %b %H:%M}; {a['level']} raised "
+                   f"{a['raised']:%d %b %H:%M})")
+        return
     if ev["type"] == "cleared":
         st.success(f"Back to normal: machine {a['equipmentid']} · device {a['deviceid']} · fixture {a['fixture']} · "
                    f"{a['signal'].upper()} ({ev['time']:%d %b %H:%M}; {a['level']} raised {a['raised']:%d %b %H:%M})")
