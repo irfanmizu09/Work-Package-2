@@ -39,13 +39,16 @@ CUSUM_CAP = 40.0
 FREEZE_MAX = 600
 GAP_H = 12.0        # idle hours after which a group restarts at its centre (changeover)
 NS_H = 3600 * 10**9
+RELEARN = 60        # measured units a recalibrated fixture uses to learn its new centre
+RECAL_MODES = ("relearn", "keep")
 
 
 class GroupState:
     __slots__ = ("n", "s", "m", "l", "base", "near", "rej", "cp", "cn", "w", "wsum", "warmbuf", "fz",
-                 "cp0", "cn0", "last_t", "e50")
+                 "cp0", "cn0", "last_t", "e50", "wt")
 
     def __init__(self):
+        self.wt = WARM                   # units the centre is learnt from (RELEARN after a recalibration)
         self.n = 0
         self.s = self.m = self.l = self.base = None
         self.near = self.rej = 0.0
@@ -65,6 +68,23 @@ class GroupState:
         self.cp = self.cn = 0.0
         self.fz = 0
         self.cp0 = self.cn0 = None
+
+    def recal(self, mode="relearn"):
+        """The fixture was recalibrated. Both modes restart the averages and the CUSUM and empty the reject
+        window and rates (those rejects were the old state). "keep": the old centre stays.
+        "relearn": the centre is learnt again from the next RELEARN measured units (median, as at
+        warm-up); until then the group returns no features, so it is not scored."""
+        self.restart()
+        self.w.clear()
+        self.wsum = 0
+        self.near = self.rej = 0.0
+        self.e50 = 0.0
+        if mode == "relearn":
+            self.base = self.s = self.m = self.l = None
+            self.warmbuf = []
+            self.wt = RELEARN
+        elif mode != "keep":
+            raise ValueError(f"recal mode {mode!r} not in {RECAL_MODES}")
 
     def push_rej(self, isrej):
         if len(self.w) == self.w.maxlen:
@@ -97,9 +117,26 @@ class MachineSignal:
 
 
 class FeatureEngine:
-    def __init__(self, near_pct=80.0):
+    def __init__(self, near_pct=80.0, recal_mode="relearn"):
         self.near_pct = near_pct
+        self.recal_mode = recal_mode
         self.ms = {}                      # (machine, device, signal) -> MachineSignal
+
+    def recal(self, machine, device, fixture, signal, t=None):
+        """Recalibration of one tester fixture. device None = every device the fixture runs (a recal fixes
+        the fixture, not one product); signal "p2", "p4" or "both". Call it before feeding the first unit
+        tested at or after the recal time. Returns the stream keys (machine, device, fixture, signal) that
+        were reset; a group never seen yet has nothing to reset."""
+        sigs = SIGNALS if signal in (None, "both") else (signal,)
+        done = []
+        for (m, dv, s), msig in self.ms.items():
+            if m != machine or s not in sigs or (device is not None and dv != device):
+                continue
+            st = msig.g.get(fixture)
+            if st is not None:
+                st.recal(self.recal_mode)
+                done.append((m, dv, fixture, s))
+        return done
 
     def update(self, machine, device, fixture, signal, v, isrej, t):
         """Add one measured value (% of tolerance) at time t (ns). Returns (features, extras) or None
@@ -119,7 +156,7 @@ class FeatureEngine:
         # warm-up: learn the group's centre (robust: median of the first WARM values)
         if st.base is None:
             st.warmbuf.append(v)
-            if len(st.warmbuf) >= WARM:
+            if len(st.warmbuf) >= st.wt:
                 wb = np.array(st.warmbuf)
                 st.base = float(np.median(wb))
                 st.s = st.m = st.l = st.base
@@ -197,17 +234,34 @@ META = ["unit_key", "testtime", "equipmentid", "deviceid", "fixture", "signal", 
         "onset", "level", "eta_units", "sigma", "base", "shift_pct", "machine_move", "n_peers", "infl"]
 
 
-def replay(d, fe=None, signals=SIGNALS, near_pct=80.0, inject=None):
+def recal_list(recals):
+    """recal_events table -> [(t ns, machine, device or None, fixture, signal)] in time order."""
+    if recals is None or len(recals) == 0:
+        return []
+    r = recals.sort_values("time", kind="stable")
+    t = pd.to_datetime(r.time).to_numpy().astype("datetime64[ns]").astype("int64")
+    dev = [None if (x is None or x != x or str(x).strip() in ("", "*")) else str(x) for x in r.deviceid]
+    return list(zip(t, r.equipmentid.astype(int), dev, r.fixture.astype(int), r.signal.astype(str)))
+
+
+def replay(d, fe=None, signals=SIGNALS, near_pct=80.0, inject=None, recals=None):
     """Run a load.load() table through the engine in test order. Returns (meta, F).
-    inject(signal, i) -> offset in % tol added to v (drift injection, step d); None = real data."""
+    inject(signal, i) -> offset in % tol added to v (drift injection, step d); None = real data.
+    recals: recal_events table (time, equipmentid, deviceid, fixture, signal); each event is applied
+    before the first unit tested at or after its time. With recals, meta gets a column `recal`: True on
+    the first feature row of a stream after a recalibration (the alarm tracker resets there)."""
     fe = fe or FeatureEngine(near_pct)
     d = d.sort_values(["testtime", "equipmentid", "fixture"], kind="stable")
     t = d.testtime.to_numpy().astype("datetime64[ns]").astype("int64")     # parquet stores us
+    rl, ri, fresh = recal_list(recals), 0, set()
     cols = {k: d[k].to_numpy() for k in ("unit_key", "equipmentid", "deviceid", "fixture")}
     sv = {s: (d[f"v_{s}"].to_numpy(dtype=float), (d[f"kind_{s}"] == "out_of_band").to_numpy(),
               d[f"band_ok_{s}"].to_numpy()) for s in signals}
-    rows, F = [], []
+    rows, F, flag = [], [], []
     for i in range(len(d)):
+        while ri < len(rl) and rl[ri][0] <= t[i]:
+            fresh.update(fe.recal(*rl[ri][1:]))
+            ri += 1
         for s in signals:
             v, rj, bo = sv[s][0][i], sv[s][1][i], sv[s][2][i]
             if v != v:          # NaN: not measured / aborted / placeholder
@@ -221,7 +275,13 @@ def replay(d, fe=None, signals=SIGNALS, near_pct=80.0, inject=None):
             rows.append((cols["unit_key"][i], t[i], cols["equipmentid"][i], cols["deviceid"][i], cols["fixture"][i],
                          s, v, bool(rj), bool(bo)) + ex)
             F.append(f)
+            if rl:
+                k = (cols["equipmentid"][i], cols["deviceid"][i], cols["fixture"][i], s)
+                flag.append(k in fresh)
+                fresh.discard(k)
     meta = pd.DataFrame(rows, columns=META)
+    if rl:
+        meta["recal"] = np.array(flag, dtype=bool)
     meta["testtime"] = pd.to_datetime(meta.testtime)
     meta["onset"] = pd.to_datetime(meta.onset)
     return meta, (np.array(F, dtype=float) if F else np.zeros((0, len(FEATS))))

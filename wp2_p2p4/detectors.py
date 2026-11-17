@@ -97,18 +97,28 @@ class AlarmTracker:
         return None if s["level"] == prev else (prev, s["level"])
 
 
-def alarm_events(meta, scores, thresholds, persist=3, clear_n=60):
-    """Run the tracker over meta (time order). Returns level changes and each row's level."""
+def alarm_events(meta, scores, thresholds, persist=3, clear_n=60, resets=None):
+    """Run the tracker over meta (time order). Returns level changes and each row's level.
+    resets: bool per row (features.replay meta.recal) - the stream was recalibrated just before this row:
+    an open warning / alarm closes there (event to "ok", reason "recalibrated") and the tracker restarts.
+    With resets the events get a `reason` column ("" or "recalibrated")."""
     tr = AlarmTracker(thresholds.get("warn"), thresholds["alarm"], persist=persist, clear_n=clear_n)
     keys = list(zip(*(meta[k].to_numpy() for k in KEY)))
     t = meta.testtime.to_numpy()
     ev, level = [], np.empty(len(meta), dtype=object)
     for i in range(len(meta)):
+        if resets is not None and resets[i]:
+            lv = tr.level(keys[i])
+            if lv != "ok":
+                ev.append((t[i], *keys[i], lv, "ok", np.nan, i, "recalibrated"))
+            tr.reset(keys[i])
         ch = tr.update(keys[i], scores[i])
         if ch:
-            ev.append((t[i], *keys[i], ch[0], ch[1], scores[i], i))
+            ev.append((t[i], *keys[i], ch[0], ch[1], scores[i], i, ""))
         level[i] = tr.level(keys[i])
-    return pd.DataFrame(ev, columns=["testtime", *KEY, "from", "to", "score", "row"]), level
+    cols = ["testtime", *KEY, "from", "to", "score", "row", "reason"]
+    out = pd.DataFrame(ev, columns=cols)
+    return (out if resets is not None else out.drop(columns="reason")), level
 
 
 def _run(b):
